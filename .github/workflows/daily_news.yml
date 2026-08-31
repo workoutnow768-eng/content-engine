@@ -1,0 +1,65 @@
+name: Daily news carousel
+
+# Renders "10 things that happened today" (photo-backed: BBC thumbnails first,
+# Higgsfield fallback) and schedules it via Buffer -- same two-phase
+# commit-then-schedule pattern as auto-post7.
+#
+# Secrets:
+#   HIGGSFIELD_API_KEY_ID / HIGGSFIELD_API_KEY_SECRET (optional fallback)
+#   BUFFER_ACCESS_TOKEN_NEWS (required for scheduling)
+
+on:
+  schedule:
+    - cron: "12 6 * * *"   # 06:12 UTC daily (off the hour)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+      - run: pip install -r requirements.txt
+
+      - name: Render today's news carousel
+        env:
+          HIGGSFIELD_API_KEY_ID: ${{ secrets.HIGGSFIELD_API_KEY_ID }}
+          HIGGSFIELD_API_KEY_SECRET: ${{ secrets.HIGGSFIELD_API_KEY_SECRET }}
+        run: python engine/daily_news.py generate --client news --count 10
+
+      - name: Commit + push slides (so Buffer can fetch them by URL)
+        run: |
+          git config user.name "content-engine-bot"
+          git config user.email "content-engine-bot@users.noreply.github.com"
+          git add out/news
+          git diff --cached --quiet || git commit -m "News carousel: $(date -u +%Y-%m-%d)"
+          git push
+
+      - name: Schedule on Buffer
+        env:
+          BUFFER_ACCESS_TOKEN_NEWS: ${{ secrets.BUFFER_ACCESS_TOKEN_NEWS }}
+        run: python engine/daily_news.py schedule --client news
+
+      - name: Commit state
+        run: |
+          git config user.name "content-engine-bot"
+          git config user.email "content-engine-bot@users.noreply.github.com"
+          git add state/news_state.json out/news
+          git diff --cached --quiet || git commit -m "News state: $(date -u +%Y-%m-%d)"
+          git push
+
+      - name: Upload slides as artifact (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-${{ github.run_id }}
+          path: out/news/news_*
+          retention-days: 7
