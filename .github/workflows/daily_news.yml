@@ -10,7 +10,7 @@ name: Daily news carousel
 
 on:
   schedule:
-    - cron: "12 6 * * *"   # 06:12 UTC daily (off the hour)
+    - cron: "12 6 * * *"→ Runs at 06:12   # 06:12 UTC daily (off the hour)
   workflow_dispatch: {}
 
 permissions:
@@ -34,32 +34,3 @@ jobs:
           HIGGSFIELD_API_KEY_ID: ${{ secrets.HIGGSFIELD_API_KEY_ID }}
           HIGGSFIELD_API_KEY_SECRET: ${{ secrets.HIGGSFIELD_API_KEY_SECRET }}
         run: python engine/daily_news.py generate --client news --count 10
-
-      - name: Commit + push slides (so Buffer can fetch them by URL)
-        run: |
-          git config user.name "content-engine-bot"
-          git config user.email "content-engine-bot@users.noreply.github.com"
-          git add out/news
-          git diff --cached --quiet || git commit -m "News carousel: $(date -u +%Y-%m-%d)"
-          git push
-
-      - name: Schedule on Buffer
-        env:
-          BUFFER_ACCESS_TOKEN_NEWS: ${{ secrets.BUFFER_ACCESS_TOKEN_NEWS }}
-        run: python engine/daily_news.py schedule --client news
-
-      - name: Commit state
-        run: |
-          git config user.name "content-engine-bot"
-          git config user.email "content-engine-bot@users.noreply.github.com"
-          git add state/news_state.json out/news
-          git diff --cached --quiet || git commit -m "News state: $(date -u +%Y-%m-%d)"
-          git push
-
-      - name: Upload slides as artifact (backup)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: news-${{ github.run_id }}
-          path: out/news/news_*
-          retention-days: 7
