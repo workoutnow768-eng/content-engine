@@ -1,0 +1,9 @@
+{
+  "_comment": "Daily news channel config. buffer_channels must EXACTLY match the channel display names in the news brand's Buffer account (same name-matching rule as auto-post7).",
+  "handle": "@voltads_news",
+  "buffer_channels": [
+    "voltads_news",
+    "voltnews2",
+    "Volt news"
+  ]
+}
