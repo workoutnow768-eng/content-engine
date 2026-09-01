@@ -297,5 +297,60 @@ def main():
     (phase_generate if a.phase == "generate" else phase_schedule)(a)
 
 
+# --- Ranking patch (2026-09-01, dez's request): slides 1-3 should be the
+# most "breaking" stories, biased toward a US/UK audience (e.g. US-Iran on
+# slide 1); the last 7 stay in feed order. Implemented as an append-patch:
+# it widens the feed list and wraps fetch_items so phase_generate (defined
+# above, called below) transparently gets a ranked top-N from a 40-story
+# pool. Keyword scoring -- crude but free, deterministic, no API needed.
+FEEDS = FEEDS + [
+    ("BBC UK", "https://feeds.bbci.co.uk/news/uk/rss.xml"),
+    ("BBC US", "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml"),
+]
+
+BREAKING_KW = {  # weight 3: hard-news escalation words
+    "war": 3, "strike": 3, "attack": 3, "nuclear": 3, "missile": 3,
+    "killed": 3, "dead": 3, "explosion": 3, "invasion": 3, "ceasefire": 3,
+    "sanctions": 3, "hostage": 3, "shooting": 3, "crisis": 3, "emergency": 3,
+    "breaking": 3, "assassin": 3, "coup": 3, "troops": 3, "airstrike": 3,
+}
+GEO_KW = {  # weight 2: US/UK relevance + major-power geopolitics
+    "us ": 2, "u.s.": 2, "america": 2, "washington": 2, "white house": 2,
+    "president": 2, "trump": 2, "congress": 2, "pentagon": 2,
+    "uk ": 2, "britain": 2, "british": 2, "london": 2, "nhs": 2,
+    "downing street": 2, "parliament": 2,
+    "iran": 2, "china": 2, "russia": 2, "nato": 2, "israel": 2, "ukraine": 2,
+    "election": 2, "economy": 2, "interest rate": 2, "inflation": 2,
+}
+
+
+def _score(item):
+    text = " " + (item["title"] + " " + item["desc"]).lower() + " "
+    s = 0
+    for kw, w in BREAKING_KW.items():
+        if kw in text:
+            s += w
+    for kw, w in GEO_KW.items():
+        if kw in text:
+            s += w
+    return s
+
+
+def rank_items(items, count):
+    """Top 3 by breaking/US-UK score (highest first), then the rest in
+    original feed order. Slide 1 = highest-scoring story."""
+    scored = sorted(items, key=_score, reverse=True)
+    top = scored[:3]
+    rest = [it for it in items if it not in top]
+    return (top + rest)[:count]
+
+
+_fetch_items_raw = fetch_items
+
+
+def fetch_items(count):
+    return rank_items(_fetch_items_raw(40), count)
+
+
 if __name__ == "__main__":
     main()
