@@ -34,9 +34,51 @@ MEDIA_NS = "{http://search.yahoo.com/mrss/}"
 
 FEEDS = [
     ("BBC", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("BBC UK", "https://feeds.bbci.co.uk/news/uk/rss.xml"),
+    ("BBC US", "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml"),
     ("BBC Tech", "https://feeds.bbci.co.uk/news/technology/rss.xml"),
     ("BBC Science", "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"),
 ]
+
+# Ranking (added 2026-09-01, dez's request): slides 1-3 should be the most
+# "breaking" stories, biased toward what a US/UK audience cares about
+# (e.g. US-Iran escalation belongs on slide 1). Keyword scoring -- crude but
+# free, deterministic, and needs no API. Last 7 slides stay in feed order.
+BREAKING_KW = {  # weight 3: hard-news escalation words
+    "war": 3, "strike": 3, "attack": 3, "nuclear": 3, "missile": 3,
+    "killed": 3, "dead": 3, "explosion": 3, "invasion": 3, "ceasefire": 3,
+    "sanctions": 3, "hostage": 3, "shooting": 3, "crisis": 3, "emergency": 3,
+    "breaking": 3, "assassin": 3, "coup": 3, "troops": 3, "airstrike": 3,
+}
+GEO_KW = {  # weight 2: US/UK relevance and major-power geopolitics
+    "us ": 2, "u.s.": 2, "america": 2, "washington": 2, "white house": 2,
+    "president": 2, "trump": 2, "congress": 2, "pentagon": 2,
+    "uk ": 2, "britain": 2, "british": 2, "london": 2, "nhs": 2,
+    "downing street": 2, "parliament": 2,
+    "iran": 2, "china": 2, "russia": 2, "nato": 2, "israel": 2, "ukraine": 2,
+    "election": 2, "economy": 2, "interest rate": 2, "inflation": 2,
+}
+
+
+def _score(item):
+    text = " " + (item["title"] + " " + item["desc"]).lower() + " "
+    s = 0
+    for kw, w in BREAKING_KW.items():
+        if kw in text:
+            s += w
+    for kw, w in GEO_KW.items():
+        if kw in text:
+            s += w
+    return s
+
+
+def rank_items(items, count):
+    """Top 3 by breaking/US-UK score (highest first), then the rest of the
+    slots filled in original feed order. Slide 1 = highest-scoring story."""
+    scored = sorted(items, key=_score, reverse=True)
+    top = scored[:3]
+    rest = [it for it in items if it not in top]
+    return (top + rest)[:count]
 
 STYLE = {
     "bg_top": "#101010", "bg_bottom": "#050505",
@@ -89,19 +131,36 @@ def fetch_items(count):
     return items[:count]
 
 
+def _upsized_urls(url):
+    """BBC serves tiny RSS thumbnails, but the size is baked into the URL
+    (e.g. .../ace/standard/240/cpsprodpb/...). Requesting a bigger size
+    returns the SAME photo at real resolution -- the 240px originals were
+    the cause of the blurry slide backgrounds (fixed 2026-09-01). Yields
+    candidate URLs, largest first, ending with the original."""
+    for size in ("1600", "1024", "800"):
+        bigger = re.sub(r"/(standard|branded_news|ws)/(\d{2,4})/", rf"/\1/{size}/", url)
+        if bigger != url:
+            yield bigger
+    yield url
+
+
 def download_photo(url, path):
-    """Download a story thumbnail; returns True on success, never raises."""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        data = urllib.request.urlopen(req, timeout=20).read()
-        img = Image.open(io.BytesIO(data)).convert("RGB")
-        if img.width < 240 or img.height < 135:
-            return False  # too small to cover-crop to 1080x1920 acceptably
-        img.save(path, quality=92)
-        return True
-    except Exception as e:
-        print(f"WARN: thumbnail download failed ({e})")
-        return False
+    """Download a story photo at the highest available size; True on success."""
+    for candidate in _upsized_urls(url):
+        try:
+            req = urllib.request.Request(candidate, headers={"User-Agent": "Mozilla/5.0"})
+            data = urllib.request.urlopen(req, timeout=20).read()
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            if img.width < 600 and candidate != url:
+                continue  # try the next size down
+            if img.width < 320:
+                return False  # genuinely tiny -- let the AI/gradient fallback handle it
+            img.save(path, quality=92)
+            return True
+        except Exception:
+            continue
+    print(f"WARN: no usable size for thumbnail {url[:80]}")
+    return False
 
 
 def _hf_prompt(item):
@@ -200,7 +259,7 @@ def manifest_path(client):
 
 def phase_generate(a):
     cfg = load_cfg(a.client)
-    items = fetch_items(a.count)
+    items = rank_items(fetch_items(40), a.count)  # big pool -> rank -> top N
     if len(items) < 5:
         sys.exit(f"only {len(items)} stories fetched -- refusing to post a thin carousel")
     today = datetime.date.today()
@@ -295,61 +354,6 @@ def main():
     ap.add_argument("--count", type=int, default=10)
     a = ap.parse_args()
     (phase_generate if a.phase == "generate" else phase_schedule)(a)
-
-
-# --- Ranking patch (2026-09-01, dez's request): slides 1-3 should be the
-# most "breaking" stories, biased toward a US/UK audience (e.g. US-Iran on
-# slide 1); the last 7 stay in feed order. Implemented as an append-patch:
-# it widens the feed list and wraps fetch_items so phase_generate (defined
-# above, called below) transparently gets a ranked top-N from a 40-story
-# pool. Keyword scoring -- crude but free, deterministic, no API needed.
-FEEDS = FEEDS + [
-    ("BBC UK", "https://feeds.bbci.co.uk/news/uk/rss.xml"),
-    ("BBC US", "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml"),
-]
-
-BREAKING_KW = {  # weight 3: hard-news escalation words
-    "war": 3, "strike": 3, "attack": 3, "nuclear": 3, "missile": 3,
-    "killed": 3, "dead": 3, "explosion": 3, "invasion": 3, "ceasefire": 3,
-    "sanctions": 3, "hostage": 3, "shooting": 3, "crisis": 3, "emergency": 3,
-    "breaking": 3, "assassin": 3, "coup": 3, "troops": 3, "airstrike": 3,
-}
-GEO_KW = {  # weight 2: US/UK relevance + major-power geopolitics
-    "us ": 2, "u.s.": 2, "america": 2, "washington": 2, "white house": 2,
-    "president": 2, "trump": 2, "congress": 2, "pentagon": 2,
-    "uk ": 2, "britain": 2, "british": 2, "london": 2, "nhs": 2,
-    "downing street": 2, "parliament": 2,
-    "iran": 2, "china": 2, "russia": 2, "nato": 2, "israel": 2, "ukraine": 2,
-    "election": 2, "economy": 2, "interest rate": 2, "inflation": 2,
-}
-
-
-def _score(item):
-    text = " " + (item["title"] + " " + item["desc"]).lower() + " "
-    s = 0
-    for kw, w in BREAKING_KW.items():
-        if kw in text:
-            s += w
-    for kw, w in GEO_KW.items():
-        if kw in text:
-            s += w
-    return s
-
-
-def rank_items(items, count):
-    """Top 3 by breaking/US-UK score (highest first), then the rest in
-    original feed order. Slide 1 = highest-scoring story."""
-    scored = sorted(items, key=_score, reverse=True)
-    top = scored[:3]
-    rest = [it for it in items if it not in top]
-    return (top + rest)[:count]
-
-
-_fetch_items_raw = fetch_items
-
-
-def fetch_items(count):
-    return rank_items(_fetch_items_raw(40), count)
 
 
 if __name__ == "__main__":
